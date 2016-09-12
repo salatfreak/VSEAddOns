@@ -7,7 +7,7 @@
 #
 #  This program is distributed in the hope that it will be useful,
 #  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 #  GNU General Public License for more details.
 #
 #  You should have received a copy of the GNU General Public License
@@ -20,13 +20,13 @@
 bl_info = {
     "name": "Add Composite Effect",
     "author": "Salatfreak",
-    "version": (0, 1),
+    "version": (0, 2),
     "blender": (2, 75),
     "location": "Video Sequence Editor > Add > Effect Strip > Composite",
     "description": "Adds Composite effect to Image and Movie Strips",
     "warning": "",
     "wiki_url": "",
-    "category": "Video Sequence Editor"
+    "category": "Sequencer"
 }
 
 # Constants
@@ -36,8 +36,31 @@ MAX_CHANNEL = 32
 import bpy
 import os
 import re
+import uuid
 from functools import reduce
 from mathutils import Vector
+
+### Helper functions ###
+########################
+
+# Get scene from ID
+def getScene(scene_id):
+    # Find and return scene with matching ID
+    for scene in bpy.data.scenes:
+        if scene.comp_props.id == scene_id:
+            return scene
+            
+    # Return None if no scene matches
+    return None
+    
+# Switch screen
+def switchScreen(context, screen_name):
+    for i in range(len(bpy.data.screens)):
+        # Break if found
+        if context.screen.name == screen_name: break
+
+        # Switch to next screen
+        bpy.ops.screen.screen_set(delta=1)
 
 ### RegExp preparation ###
 ##########################
@@ -50,19 +73,20 @@ img_seq_re = re.compile("^(.*[^\d])?(\d+)\.("+ img_ext_pattern +")$")
 ### Object properties ###
 #########################
 
-# Composite Scene property group
+# Composite scene property group
 class SceneCompositeProps(bpy.types.PropertyGroup):
-    # Is composite Scene property
+    # Is composite scene property
     is_comp_scene = bpy.props.BoolProperty(
         name="Is Composite Scene", default=False
     )
+    
+    # Scene ID property
+    id = bpy.props.StringProperty(name="Unique ID", default="")
 
-    # Get scenes
-    def get_scenes(self, context):
-        return [(scn.name, scn.name, "") for scn in bpy.data.scenes]
-
-    # Parent scene property
-    parent_scene = bpy.props.EnumProperty(name="Parent scene", items=get_scenes)
+    # Parent scene ID property
+    parent_scene_id = bpy.props.StringProperty(
+        name="Parent scene ID", default=""
+    )
 
     # Get scenes
     def get_screens(self, context):
@@ -97,25 +121,28 @@ class EffectAddOperator():
 
     # Prepare data
     def invoke(self, context, event):
+        # Get source strips
+        self.source_strips = self.get_source_strips(context)
+
         # Require at least one strip
-        if len(context.selected_sequences) == 0:
+        if len(self.source_strips) == 0:
             self.report(
                 {'ERROR'}, "At least one selected sequence strip is needed"
             )
             return {'CANCELLED'}
 
         # Require all strips to be images or movies
-        for seq in context.selected_sequences:
-            if not seq.type in {'MOVIE', 'IMAGE'}:
+        for seq in self.source_strips:
+            if seq.type not in {'MOVIE', 'IMAGE'}:
                 self.report({'ERROR'}, "Only Image and Movie strips allowed")
                 return {'CANCELLED'}
 
         # Find strip start and end frame
         self.comp_strip_start = max(
-            [strip.frame_final_start for strip in context.selected_sequences]
+            [strip.frame_final_start for strip in self.source_strips]
         )
         self.comp_strip_end = min(
-            [strip.frame_final_end for strip in context.selected_sequences]
+            [strip.frame_final_end for strip in self.source_strips]
         )
 
         # Require shared frames
@@ -125,7 +152,7 @@ class EffectAddOperator():
 
         # Get following channel
         highest_channel = max(
-            [strip.channel for strip in context.selected_sequences]
+            [strip.channel for strip in self.source_strips]
         )
         self.comp_strip_channel = (highest_channel + 1) % (MAX_CHANNEL + 1)
 
@@ -153,16 +180,6 @@ class EffectAddOperator():
         if not channel_found:
             self.report({'ERROR'}, "No fitting channel found")
             return {'CANCELLED'}
-
-        # Get and source strips
-        self.source_strips = context.selected_sequences
-
-        # Put active strip to end
-        for strip in self.source_strips:
-            if strip == context.scene.sequence_editor.active_strip:
-                self.source_strips.remove(strip)
-                self.source_strips.append(strip)
-                break
 
         # Call execute
         return self.execute(context)
@@ -216,7 +233,7 @@ class EffectAddOperator():
                 match = img_seq_re.match(strip.elements[0].filename)
 
                 # Set offset
-                if not match is None:
+                if match is not None:
                     img_offset = int(
                         match.string[match.regs[2][0]:match.regs[2][1]]
                     ) - 1
@@ -237,10 +254,14 @@ class EffectAddOperator():
 
             return node
 
+        # Assign scene id
+        if context.scene.comp_props.id == "":
+            context.scene.comp_props.id = uuid.uuid4().hex
+
         # Add new scene
         comp_scene = bpy.data.scenes.new(self.comp_scene_name)
         comp_scene.comp_props.is_comp_scene = True
-        comp_scene.comp_props.parent_scene = context.scene.name
+        comp_scene.comp_props.parent_scene_id = context.scene.comp_props.id
         comp_scene.comp_props.parent_screen = context.screen.name
         comp_scene.use_nodes = True
 
@@ -317,60 +338,52 @@ class EffectAddOperator():
 
         return {'FINISHED'}
 
+    # Get source strips
+    def get_source_strips(self, context):
+        # Get selected strips
+        source_strips = context.selected_sequences
+
+        # Put active strip to end
+        for strip in source_strips:
+            if strip == context.scene.sequence_editor.active_strip:
+                source_strips.remove(strip)
+                source_strips.append(strip)
+                break
+
+        # Return source strips
+        return source_strips
+
     # Set up nodes
     def set_up_nodes(self, scene, input_nodes):
         # Get node tree
         node_tree = scene.node_tree
         
-        # Position Nodes and create Scale Nodes
+        # Position nodes and create scale nodes
         scale_nodes = []
         node_loc = Vector((0, 0))
         for node in input_nodes:
-            # Position Node
+            # Position node
             node.location = Vector(node_loc)
 
-            # Create Scale Node
+            # Create scale node
             scale_node = node_tree.nodes.new('CompositorNodeScale')
             scale_node.name = "Scale_"+ node.name
             scale_node.label = "Scale "+ node.name
             scale_node.space = 'RENDER_SIZE'
             scale_node.location = node_loc + Vector((180, 0))
 
-            # Connect Scale Node
+            # Connect scale node
             node_tree.links.new(
                 node.outputs['Image'], scale_node.inputs['Image']
             )
 
-            # Store Scale Node
+            # Store scale node
             scale_nodes.append(scale_node)
 
-            # Calculate next Node location
+            # Calculate next node location
             node_loc -=  Vector((0, 360))
 
         return scale_nodes
-
-    # Center all nodes
-    def center_nodes(self, nodes):
-        # Get min and max for x and y
-        min_vec = Vector(nodes[0].location)
-        max_vec = Vector(nodes[0].location)
-        for node in nodes:
-            min_node = node.location + Vector((0, -node.dimensions.y))
-            max_node = node.location + Vector((node.dimensions.x, 0))
-            if min_node.x < min_vec.x: min_vec.x = min_node.x
-            if max_node.x > max_vec.x: max_vec.x = max_node.x
-            if min_node.y < min_vec.y: min_vec.y = min_node.y
-            if max_node.y > max_vec.y: max_vec.y = max_node.y
-
-        # Get center and shift vector
-        center = (min_vec + max_vec) / 2
-        shift = Vector((260, 260)) - center
-        shift.x = round(shift.x / 20) * 20
-        shift.y = round(shift.y / 20) * 20
-
-        # Shift nodes
-        for node in nodes:
-            node.location += shift
 
 # Composite effect
 class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
@@ -388,38 +401,39 @@ class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
 
     # Set up nodes
     def set_up_nodes(self, scene, input_nodes):
-        # Set up input and Scale Nodes
+        # Set up input and scale nodes
         scale_nodes = EffectAddOperator.set_up_nodes(self, scene, input_nodes)
 
         # Get node tree
         node_tree = scene.node_tree
 
-        # Add Composite Node
+        # Add composite node
         composite_node = node_tree.nodes.new('CompositorNodeComposite')
         composite_node.location = scale_nodes[0].location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             scale_nodes[0].outputs['Image'],
             composite_node.inputs['Image']
         )
 
-        # Add Viewer Node
+        # Add viewer node
         viewer_node = node_tree.nodes.new('CompositorNodeViewer')
         viewer_node.location = composite_node.location + Vector((0, -160))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             scale_nodes[0].outputs['Image'],
             viewer_node.inputs['Image']
         )
 
-        # Deselect all Nodes
+        # Deselect all nodes
         for node in node_tree.nodes:
             node.select = False
 
-        # Center Nodes
-        self.center_nodes(node_tree.nodes)
+        # Center nodes
+        for node in node_tree.nodes:
+            node.location += Vector((0, 640))
 
 # Composite button
 def composite_button(self, context):
@@ -443,79 +457,74 @@ class KeyingEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         # Initialize general effect operator
         return EffectAddOperator.invoke(self, context, event)
 
-    # Adjust selection
-    def execute(self, context):
-        # Deselect further strips
-        for strip in self.source_strips[:-1]:
-            strip.select = False
-            self.source_strips.remove(strip)
-
-        # Setup input nodes
-        return EffectAddOperator.execute(self, context)
+    # Get source strips
+    def get_source_strips(self, context):
+        return EffectAddOperator.get_source_strips(self, context)[-1:]
 
     # Set up nodes
     def set_up_nodes(self, scene, input_nodes):
-        # Set up input and Scale Nodes
+        # Set up input and scale nodes
         scale_node = EffectAddOperator.set_up_nodes(self, scene, input_nodes)[0]
 
         # Get node tree
         node_tree = scene.node_tree
 
-        # Add Mask Node
+        # Add mask node
         mask_node = node_tree.nodes.new('CompositorNodeMask')
         mask_node.location = scale_node.location + Vector((-180, -360))
 
-        # Add Invert Node
+        # Add invert node
         invert_node = node_tree.nodes.new('CompositorNodeInvert')
         invert_node.location = scale_node.location + Vector((0, -360))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mask_node.outputs['Mask'], invert_node.inputs['Color']
         )
 
-        # Add Keying Node
+        # Add keying node
         keying_node = node_tree.nodes.new('CompositorNodeKeying')
         keying_node.location = scale_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             scale_node.outputs['Image'], keying_node.inputs['Image']
         )
 
-        # Add Alpha Converter Node
+        # Add alpha converter node
         alpha_node = node_tree.nodes.new('CompositorNodePremulKey')
         alpha_node.location = keying_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             keying_node.outputs['Image'], alpha_node.inputs['Image']
         )
 
-        # Add Composite Node
+        # Add composite node
         composite_node = node_tree.nodes.new('CompositorNodeComposite')
         composite_node.location = alpha_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             alpha_node.outputs['Image'], composite_node.inputs['Image']
         )
 
-        # Add Viewer Node
+        # Add viewer node
         viewer_node = node_tree.nodes.new('CompositorNodeViewer')
         viewer_node.location = composite_node.location + Vector((0, -160))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             alpha_node.outputs['Image'], viewer_node.inputs['Image']
         )
 
-        # Deselect all Nodes
+        # Deselect all nodes
         for node in node_tree.nodes:
             node.select = False
 
-        # Center Nodes
-        self.center_nodes(node_tree.nodes)
+        # Center nodes
+        for node in node_tree.nodes:
+            node.location += Vector((-160, 520))
 
 # Keying button
 def keying_button(self, context):
@@ -539,55 +548,49 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         # Initialize general effect operator
         return EffectAddOperator.invoke(self, context, event)
 
-    # Adjust selection
-    def execute(self, context):
-        # Deselect further strips
-        for strip in self.source_strips[:-1]:
-            strip.select = False
-            self.source_strips.remove(strip)
-
-        # Setup input nodes
-        return EffectAddOperator.execute(self, context)
+    # Get source strips
+    def get_source_strips(self, context):
+        return EffectAddOperator.get_source_strips(self, context)[-1:]
 
     # Set up nodes
     def set_up_nodes(self, scene, input_nodes):
-        # Set up input and Scale Nodes
+        # Set up input and scale nodes
         scale_node = EffectAddOperator.set_up_nodes(self, scene, input_nodes)[0]
 
         # Get node tree
         node_tree = scene.node_tree
 
-        # Add size Node
+        # Add size node
         size_node = node_tree.nodes.new('CompositorNodeValue')
         size_node.name = size_node.label = "Size"
         size_node.outputs['Value'].default_value = 30.5
         size_node.location = scale_node.location + Vector((-180, 120))
 
-        # Add Mask Node
+        # Add mask node
         mask_node = node_tree.nodes.new('CompositorNodeMask')
         mask_node.location = size_node.location + Vector((0, 220))
 
-        # Create Pixelize Group if not existent
-        if not 'Pixelize' in bpy.data.node_groups:
+        # Create pixelize group if not existent
+        if 'Pixelize' not in bpy.data.node_groups:
             # Create group
             pixelize = bpy.data.node_groups.new(
                 "Pixelize", 'CompositorNodeTree'
             )
 
-            # Add Group Input Node
+            # Add group input node
             input_node = pixelize.nodes.new('NodeGroupInput')
 
-            # Add Math Node
+            # Add math node
             divide_node = pixelize.nodes.new('CompositorNodeMath')
             divide_node.operation = 'DIVIDE'
             divide_node.inputs[0].default_value = 1.0
             divide_node.location = input_node.location + Vector((180, -140))
 
-            # Add Scale down Node
+            # Add scale down node
             scale_down_node = pixelize.nodes.new('CompositorNodeScale')
             scale_down_node.location = divide_node.location + Vector((180, 100))
 
-            # Connect Nodes
+            # Connect nodes
             pixelize.links.new(
                 input_node.outputs[0], scale_down_node.inputs['Image']
             )
@@ -599,20 +602,20 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
                 divide_node.outputs['Value'], scale_down_node.inputs['Y']
             )
 
-            # Add Pixelate Node
+            # Add pixelate node
             pixelate_node = pixelize.nodes.new('CompositorNodePixelate')
             pixelate_node.location = scale_down_node.location + Vector((180, 0))
 
-            # Connect Nodes
+            # Connect nodes
             pixelize.links.new(
                 scale_down_node.outputs['Image'], pixelate_node.inputs['Color']
             )
 
-            # Add Scale up Node
+            # Add scale up node
             scale_up_node = pixelize.nodes.new('CompositorNodeScale')
             scale_up_node.location = pixelate_node.location + Vector((180, 200))
 
-            # Connect Nodes
+            # Connect nodes
             pixelize.links.new(
                 pixelate_node.outputs['Color'], scale_up_node.inputs['Image']
             )
@@ -623,26 +626,27 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
                 input_node.outputs['Value'], scale_up_node.inputs['Y']
             )
 
-            # Add Group Output Node
+            # Add group output node
             output_node = pixelize.nodes.new('NodeGroupOutput')
             output_node.location = scale_up_node.location + Vector((180, -160))
 
-            # Connect Nodes
+            # Connect nodes
             pixelize.links.new(
                 scale_up_node.outputs['Image'], output_node.inputs[0]
             )
 
-            # Center Nodes
-            self.center_nodes(pixelize.nodes)
+            # Center nodes
+            for node in pixelize.nodes:
+                node.location += Vector((-60, 80))
         else:
             pixelize = bpy.data.node_groups['Pixelize']
 
-        # Add Pixelize Node
+        # Add pixelize node
         pixelize_movie_node = node_tree.nodes.new('CompositorNodeGroup')
         pixelize_movie_node.node_tree = pixelize
         pixelize_movie_node.location = scale_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             scale_node.outputs['Image'],
             pixelize_movie_node.inputs['Image']
@@ -651,13 +655,13 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
             size_node.outputs['Value'], pixelize_movie_node.inputs['Value']
         )
 
-        # Add Pixelize Node
+        # Add pixelize node
         pixelize_mask_node = node_tree.nodes.new('CompositorNodeGroup')
         pixelize_mask_node.node_tree = pixelize
         pixelize_mask_node.location = pixelize_movie_node.location \
             + Vector((0, 160))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mask_node.outputs['Mask'], pixelize_mask_node.inputs['Image']
         )
@@ -665,12 +669,12 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
             size_node.outputs['Value'], pixelize_mask_node.inputs['Value']
         )
 
-        # Add Mix Node
+        # Add mix node
         mix_node = node_tree.nodes.new('CompositorNodeMixRGB')
         mix_node.use_alpha = True
         mix_node.location = pixelize_mask_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             pixelize_mask_node.outputs['Image'], mix_node.inputs['Fac']
         )
@@ -681,32 +685,31 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
             pixelize_movie_node.outputs['Image'], mix_node.inputs[2]
         )
 
-        # Add Composite Node
+        # Add composite node
         composite_node = node_tree.nodes.new('CompositorNodeComposite')
         composite_node.location = mix_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mix_node.outputs['Image'], composite_node.inputs['Image']
         )
 
-        # Add Viewer Node
+        # Add viewer node
         viewer_node = node_tree.nodes.new('CompositorNodeViewer')
         viewer_node.location = composite_node.location + Vector((0, -160))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mix_node.outputs['Image'], viewer_node.inputs['Image']
         )
 
-        # Deselect all Nodes
+        # Deselect all nodes
         for node in node_tree.nodes:
             node.select = False
 
-        # Center Nodes
-        self.center_nodes(node_tree.nodes)
-
-        # Add Mask
+        # Center nodes
+        for node in node_tree.nodes:
+            node.location += Vector((-160, 280))
 
 # Pixelize button
 def pixelize_button(self, context):
@@ -735,33 +738,27 @@ class TransitionEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         # Initialize general effect operator
         return EffectAddOperator.invoke(self, context, event)
 
-    # Adjust selection
-    def execute(self, context):
-        # Deselect further strips
-        for strip in self.source_strips[:-2]:
-            strip.select = False
-            self.source_strips.remove(strip)
-
-        # Setup input nodes
-        return EffectAddOperator.execute(self, context)
+    # Get source strips
+    def get_source_strips(self, context):
+        return EffectAddOperator.get_source_strips(self, context)[-2:]
 
     # Set up nodes
     def set_up_nodes(self, scene, input_nodes):
-        # Set up input and Scale Nodes
+        # Set up input and scale nodes
         scale_nodes = EffectAddOperator.set_up_nodes(self, scene, input_nodes)
 
         # Get node tree
         node_tree = scene.node_tree
 
-        # Add Mask Node
+        # Add mask node
         mask_node = node_tree.nodes.new('CompositorNodeMask')
         mask_node.location = scale_nodes[0].location + Vector((-180, 220))
 
-        # Add Mix Node
+        # Add mix node
         mix_node = node_tree.nodes.new('CompositorNodeMixRGB')
         mix_node.location = scale_nodes[0].location + Vector((180, 120))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mask_node.outputs['Mask'], mix_node.inputs['Fac']
         )
@@ -772,31 +769,32 @@ class TransitionEffectAddOperator(bpy.types.Operator, EffectAddOperator):
             scale_nodes[1].outputs['Image'], mix_node.inputs[2]   
         )
 
-        # Add Composite Node
+        # Add composite node
         composite_node = node_tree.nodes.new('CompositorNodeComposite')
         composite_node.location = mix_node.location + Vector((180, 0))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mix_node.outputs['Image'],
             composite_node.inputs['Image']
         )
 
-        # Add Viewer Node
+        # Add viewer node
         viewer_node = node_tree.nodes.new('CompositorNodeViewer')
         viewer_node.location = composite_node.location + Vector((0, -160))
 
-        # Connect Nodes
+        # Connect nodes
         node_tree.links.new(
             mix_node.outputs['Image'], viewer_node.inputs['Image']
         )
 
-        # Deselect all Nodes
+        # Deselect all nodes
         for node in node_tree.nodes:
             node.select = False
-
-        # Center Nodes
-        self.center_nodes(node_tree.nodes)
+            
+        # Center nodes
+        for node in node_tree.nodes:
+            node.location += Vector((-80, 520))
 
 # Transition button
 def transition_button(self, context):
@@ -806,10 +804,10 @@ def transition_button(self, context):
         icon='PLUGIN'
     )
 
-### Composite Strip Panel ###
+### Composite strip Panel ###
 #############################
 
-# Switch to composite Operator
+# Switch to composite operator
 class SwitchToCompositingOperator(bpy.types.Operator):
     # Meta data
     bl_idname = "sequencer.switch_to_compositing"
@@ -822,29 +820,24 @@ class SwitchToCompositingOperator(bpy.types.Operator):
         if context.scene.sequence_editor is None: return False
         strip = context.scene.sequence_editor.active_strip
         return (strip is not None and strip.type == 'SCENE' and \
-            strip.scene.comp_props.is_comp_scene)
+            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
 
     # Switch scene
     def invoke(self, context, event):
         strip = context.scene.sequence_editor.active_strip
 
         # Set scene properties
-        strip.scene.comp_props.parent_scene = context.scene.name
         strip.scene.comp_props.parent_screen = context.screen.name
 
-        # Get composite Screen
-        comp_screen = bpy.data.screens[strip.scene.comp_props.composite_screen]
-
-        # Switch to Screen
-        while context.screen != comp_screen:
-            bpy.ops.screen.screen_set(delta=1)
+        # Switch to composite screen
+        switchScreen(context, strip.scene.comp_props.composite_screen)
 
         # Switch to scene
         context.screen.scene = strip.scene
 
         return {'FINISHED'}
 
-# Remove composite Strip Operator
+# Remove composite strip operator
 class RemoveCompositeStripOperator(bpy.types.Operator):
     bl_idname = "sequencer.remove_composite_strip"
     bl_label = "Remove composite strip"
@@ -853,9 +846,10 @@ class RemoveCompositeStripOperator(bpy.types.Operator):
     # Show only for composite strips
     @classmethod
     def poll(self, context):
+        if context.scene.sequence_editor is None: return False
         strip = context.scene.sequence_editor.active_strip
         return (strip is not None and strip.type == 'SCENE' and \
-            strip.scene.comp_props.is_comp_scene)
+            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
 
     # Remove strip
     def invoke(self, context, event):
@@ -865,18 +859,16 @@ class RemoveCompositeStripOperator(bpy.types.Operator):
         
     def execute(self, context):
         strip = context.scene.sequence_editor.active_strip
-        scene = strip.scene
 
         # Remove scene
-        if not scene is None:
-            bpy.data.scenes.remove(scene)
+        bpy.data.scenes.remove(strip.scene)
 
         # Remove strip
         context.scene.sequence_editor.sequences.remove(strip)
 
         return {'FINISHED'}
 
-# Composite Strip Panel
+# Composite strip Panel
 class CompositeStripPanel(bpy.types.Panel):
     # Meta data
     bl_label = "Composite Strip"
@@ -888,8 +880,8 @@ class CompositeStripPanel(bpy.types.Panel):
     def poll(self, context):
         if context.scene.sequence_editor is None: return False
         strip = context.scene.sequence_editor.active_strip
-        if strip is None: return False
-        return (strip.type =='SCENE' and strip.scene.comp_props.is_comp_scene)
+        return (strip is not None and strip.type =='SCENE' and \
+            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
 
     # Draw panel
     def draw(self, context):
@@ -906,10 +898,10 @@ class CompositeStripPanel(bpy.types.Panel):
             RemoveCompositeStripOperator.bl_idname, text="Remove", icon='X'
         )
 
-### Composite Scene Panel ###
+### Composite scene Panel ###
 #############################
 
-# Switch to sequence editor Operator
+# Switch to sequence editor operator
 class SwitchToSequenceEditorOperator(bpy.types.Operator):
     # Meta data
     bl_idname = "node.switch_to_sequence_editor"
@@ -919,30 +911,19 @@ class SwitchToSequenceEditorOperator(bpy.types.Operator):
     # Show only for composite strips
     @classmethod
     def poll(self, context):
-        return context.scene.comp_props.is_comp_scene
+        return context.scene.comp_props.is_comp_scene and \
+            getScene(context.scene.comp_props.parent_scene_id) is not None
 
     # Switch scene
     def invoke(self, context, event):
         # Get composite scene
         comp_props = context.scene.comp_props
 
-        # Switch to Screen
-        screen_found = False
-        for i in range(len(bpy.data.screens)):
-            if context.screen.name == comp_props.parent_screen:
-                screen_found = True
-                break
-            bpy.ops.screen.screen_set(delta=1)
+        # Switch to sequence editing screen
+        switchScreen(context, comp_props.parent_screen)
 
-        # Report error on missing screen
-        if not screen_found:
-            self.report({'ERROR'}, "Sequence editing screen missing")
-
-        # Switch to Scene
-        if comp_props.parent_scene in bpy.data.scenes:
-            context.screen.scene = bpy.data.scenes[comp_props.parent_scene]
-        else:
-            self.report({'ERROR'}, "Sequence editing scene missing")
+        # Switch to parent scene
+        context.screen.scene = getScene(comp_props.parent_scene_id)
 
         return {'FINISHED'}
 
@@ -953,87 +934,78 @@ class SwitchToMaskOperator(bpy.types.Operator):
     bl_label = "Edit Mask"
     bl_description = "Edit mask for compositing"
 
-    # Show only for composite strips
+    # Show only for composite strips with valid 
     @classmethod
     def poll(self, context):
         return context.scene.comp_props.is_comp_scene
 
     # Switch scene
     def invoke(self, context, event):
-        # Store composite Scene
+        # Store composite scene
         composite_scene = context.scene
 
         # Get composite scene
         comp_props = context.scene.comp_props
 
-        # Switch to Screen
-        screen_found = False
-        for i in range(len(bpy.data.screens)):
-            if context.screen.name == comp_props.mask_screen:
-                screen_found = True
-                break
-            bpy.ops.screen.screen_set(delta=1)
+        # Switch to screen
+        switchScreen(context, comp_props.mask_screen)
 
-        # Switch to Scene
+        # Switch to scene
         context.screen.scene = composite_scene
 
-        # Prepare screen
-        if screen_found:
-            # Find image nodes
-            image_nodes = list(filter(
-                lambda n: n.type == 'IMAGE', composite_scene.node_tree.nodes
-            ))
+        # Find image nodes
+        image_nodes = list(filter(
+            lambda n: n.type == 'IMAGE', composite_scene.node_tree.nodes
+        ))
 
-            # Find mask nodes
-            mask_nodes = list(filter(
-                lambda n: n.type == 'MASK', composite_scene.node_tree.nodes
-            ))
+        # Find mask nodes
+        mask_nodes = list(filter(
+            lambda n: n.type == 'MASK', composite_scene.node_tree.nodes
+        ))
 
-            # Find clip area
-            clip_area = None
-            for area in context.screen.areas:
-                if area.type == 'CLIP_EDITOR' and area.spaces[0].view == 'CLIP':
-                    clip_area = area
-                    break
+        # Find clip area
+        clip_area = None
+        for area in context.screen.areas:
+            if area.type == 'CLIP_EDITOR' and area.spaces[0].view == 'CLIP':
+                clip_area = area
+                break
 
-            # Show clip
-            if not clip_area is None:
-                if len(image_nodes) in {1, 2} and \
-                    not image_nodes[0].image is None:
-                    # Find clip
-                    mask_clip = None
-                    for clip in bpy.data.movieclips:
-                        if clip.filepath == image_nodes[0].image.filepath:
-                            mask_clip = clip
-                            break
+        # Show clip
+        if clip_area is not None:
+            if len(image_nodes) in {1, 2} and \
+                image_nodes[0].image is not None:
+                # Find clip
+                mask_clip = None
+                for clip in bpy.data.movieclips:
+                    if clip.filepath == image_nodes[0].image.filepath:
+                        mask_clip = clip
+                        break
 
-                    # Load clip if not found
-                    if mask_clip is None:
-                        mask_clip = bpy.data.movieclips.load(
-                            image_nodes[0].image.filepath
+                # Load clip if not found
+                if mask_clip is None:
+                    mask_clip = bpy.data.movieclips.load(
+                        image_nodes[0].image.filepath
+                    )
+
+                # Set clip
+                clip_area.spaces[0].clip = mask_clip
+
+            # Set up mask
+            if clip_area.spaces[0].clip is not None:
+                clip_area.spaces[0].mode = 'MASK'
+
+                # Set up mask if single mask node
+                if len(mask_nodes) == 1:
+                    # Create mask node if none selected
+                    if mask_nodes[0].mask is None:
+                        mask_nodes[0].mask = bpy.data.masks.new(
+                            composite_scene.name
                         )
 
-                    # Set clip
-                    clip_area.spaces[0].clip = mask_clip
-
-                # Set up mask
-                if not clip_area.spaces[0].clip is None:
-                    clip_area.spaces[0].mode = 'MASK'
-
-                    # Set up mask if single mask node
-                    if len(mask_nodes) == 1:
-                        # Create mask node if none selected
-                        if mask_nodes[0].mask is None:
-                            mask_nodes[0].mask = bpy.data.masks.new(
-                                composite_scene.name
-                            )
-
-                        # Edit mask
-                        clip_area.spaces[0].mask = mask_nodes[0].mask
+                    # Edit mask
+                    clip_area.spaces[0].mask = mask_nodes[0].mask
         else:
             self.report({'ERROR'}, "Mask screen missing")
-
-
 
         return {'FINISHED'}
 
@@ -1076,25 +1048,16 @@ class SwitchToCompositeScreenOperator(bpy.types.Operator):
 
     # Switch scene
     def invoke(self, context, event):
-        # Store composite Scene
+        # Store composite scene
         composite_scene = context.scene
 
         # Get composite scene
         comp_props = context.scene.comp_props
 
-        # Switch to Screen
-        screen_found = False
-        for i in range(len(bpy.data.screens)):
-            if context.screen.name == comp_props.composite_screen:
-                screen_found = True
-                break
-            bpy.ops.screen.screen_set(delta=1)
+        # Switch to screen
+        switchScreen(context, comp_props.composite_screen)
 
-        # Report error on missing screen
-        if not screen_found:
-            self.report({'ERROR'}, "Compositing screen missing")
-
-        # Switch to Scene
+        # Switch to scene
         context.screen.scene = composite_scene
 
         return {'FINISHED'}
