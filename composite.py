@@ -564,10 +564,21 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         node_tree = scene.node_tree
 
         # Add size node
-        size_node = node_tree.nodes.new('CompositorNodeValue')
-        size_node.name = size_node.label = "Size"
-        size_node.outputs['Value'].default_value = 30.5
-        size_node.location = scale_node.location + Vector((-180, 120))
+        size_node = node_tree.nodes.new('CompositorNodeMath')
+        size_node.name = size_node.label = 'Size'
+        size_node.operation = 'MULTIPLY'
+        size_node.inputs[0].default_value = 0.305
+        size_node.location = scale_node.location + Vector((-180, 180))
+        
+        # Resolution percentage driver
+        res_driver = size_node.inputs[1].driver_add('default_value').driver
+        res_driver.type = 'AVERAGE'
+        res_variable = res_driver.variables.new()
+        res_variable.name = "scale"
+        res_variable.type = 'SINGLE_PROP'
+        res_variable.targets[0].id_type = 'SCENE'
+        res_variable.targets[0].id = scene
+        res_variable.targets[0].data_path = 'render.resolution_percentage'
 
         # Add mask node
         mask_node = node_tree.nodes.new('CompositorNodeMask')
@@ -647,7 +658,7 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         # Add pixelize node
         pixelize_movie_node = node_tree.nodes.new('CompositorNodeGroup')
         pixelize_movie_node.node_tree = pixelize
-        pixelize_movie_node.location = scale_node.location + Vector((180, 0))
+        pixelize_movie_node.location = scale_node.location + Vector((180, 80))
 
         # Connect nodes
         node_tree.links.new(
@@ -675,7 +686,7 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
         # Add mix node
         mix_node = node_tree.nodes.new('CompositorNodeMixRGB')
         mix_node.use_alpha = True
-        mix_node.location = pixelize_mask_node.location + Vector((180, 0))
+        mix_node.location = pixelize_mask_node.location + Vector((180, -40))
 
         # Connect nodes
         node_tree.links.new(
@@ -712,7 +723,7 @@ class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
 
         # Center nodes
         for node in node_tree.nodes:
-            node.location += Vector((-160, 280))
+            node.location += Vector((-160, 260))
 
 # Pixelize button
 def pixelize_button(self, context):
@@ -897,6 +908,7 @@ class CompositeStripPanel(bpy.types.Panel):
             strip.scene.comp_props, 'composite_screen', text="",
             icon='SPLITSCREEN'
         )
+        self.layout.prop(strip.scene.render, 'resolution_percentage')
         self.layout.operator(
             RemoveCompositeStripOperator.bl_idname, text="Remove", icon='X'
         )
