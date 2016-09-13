@@ -842,6 +842,13 @@ class SwitchToCompositingOperator(bpy.types.Operator):
 
         # Set scene properties
         strip.scene.comp_props.parent_screen = context.screen.name
+        
+        # Update preview range
+        if strip.scene.use_preview_range:
+            strip.scene.frame_preview_start = strip.scene.frame_start + \
+                strip.frame_offset_start
+            strip.scene.frame_preview_end = strip.scene.frame_preview_start + \
+                strip.frame_final_duration
 
         # Switch to composite screen
         switch_screen(context, strip.scene.comp_props.composite_screen)
