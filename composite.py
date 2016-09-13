@@ -44,7 +44,7 @@ from mathutils import Vector
 ########################
 
 # Get scene from ID
-def getScene(scene_id):
+def get_scene(scene_id):
     # Find and return scene with matching ID
     for scene in bpy.data.scenes:
         if scene.comp_props.id == scene_id:
@@ -54,7 +54,7 @@ def getScene(scene_id):
     return None
     
 # Switch screen
-def switchScreen(context, screen_name):
+def switch_screen(context, screen_name):
     for i in range(len(bpy.data.screens)):
         # Break if found
         if context.screen.name == screen_name: break
@@ -300,6 +300,9 @@ class EffectAddOperator():
             comp_strip.frame_offset_start = \
                 self.source_strips[0].frame_offset_start
             comp_strip.frame_offset_end = self.source_strips[0].frame_offset_end
+            
+        # Reset channel
+        comp_strip.channel = self.comp_strip_channel
 
         # Find first screen containing "composit"
         for screen in bpy.data.screens:
@@ -830,7 +833,7 @@ class SwitchToCompositingOperator(bpy.types.Operator):
         strip.scene.comp_props.parent_screen = context.screen.name
 
         # Switch to composite screen
-        switchScreen(context, strip.scene.comp_props.composite_screen)
+        switch_screen(context, strip.scene.comp_props.composite_screen)
 
         # Switch to scene
         context.screen.scene = strip.scene
@@ -912,7 +915,7 @@ class SwitchToSequenceEditorOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         return context.scene.comp_props.is_comp_scene and \
-            getScene(context.scene.comp_props.parent_scene_id) is not None
+            get_scene(context.scene.comp_props.parent_scene_id) is not None
 
     # Switch scene
     def invoke(self, context, event):
@@ -920,10 +923,10 @@ class SwitchToSequenceEditorOperator(bpy.types.Operator):
         comp_props = context.scene.comp_props
 
         # Switch to sequence editing screen
-        switchScreen(context, comp_props.parent_screen)
+        switch_screen(context, comp_props.parent_screen)
 
         # Switch to parent scene
-        context.screen.scene = getScene(comp_props.parent_scene_id)
+        context.screen.scene = get_scene(comp_props.parent_scene_id)
 
         return {'FINISHED'}
 
@@ -948,7 +951,7 @@ class SwitchToMaskOperator(bpy.types.Operator):
         comp_props = context.scene.comp_props
 
         # Switch to screen
-        switchScreen(context, comp_props.mask_screen)
+        switch_screen(context, comp_props.mask_screen)
 
         # Switch to scene
         context.screen.scene = composite_scene
@@ -1055,7 +1058,7 @@ class SwitchToCompositeScreenOperator(bpy.types.Operator):
         comp_props = context.scene.comp_props
 
         # Switch to screen
-        switchScreen(context, comp_props.composite_screen)
+        switch_screen(context, comp_props.composite_screen)
 
         # Switch to scene
         context.screen.scene = composite_scene
