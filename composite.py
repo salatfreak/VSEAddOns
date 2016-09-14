@@ -211,9 +211,8 @@ class EffectAddOperator():
             if strip.type == 'MOVIE':
                 image_source = 'MOVIE'
                 image_path = strip.filepath
-            elif len(strip.elements) != 0:
-                image_source = 'SEQUENCE' if len(strip.elements) > 1 \
-                                else 'FILE'
+            else:
+                image_source = 'SEQUENCE' if len(strip.elements) > 1 else 'FILE'
                 image_path = os.path.join(
                     strip.directory, strip.elements[0].filename
                 )
@@ -229,8 +228,10 @@ class EffectAddOperator():
 
             # Load image if not found
             if image is None:
-                image = bpy.data.images.load(image_path)
-                image.source = image_source
+                try:
+                    image = bpy.data.images.load(image_path)
+                    image.source = image_source
+                except: pass
 
             # Set up node
             node.image = image
@@ -261,10 +262,11 @@ class EffectAddOperator():
                 node.frame_duration = self.comp_strip_end \
                     - self.comp_strip_start
             else:
+                node.frame_start = strip.animation_offset_start + 1
                 node.frame_offset = strip.animation_offset_start + img_offset
                 node.frame_duration = strip.frame_duration
-                node.frame_start = strip.animation_offset_start + 1
 
+            # Return node
             return node
 
         # Assign scene id
@@ -289,9 +291,10 @@ class EffectAddOperator():
             comp_scene.frame_preview_start = strip.frame_offset_start + \
                 strip.animation_offset_start + 1
             comp_scene.frame_preview_end = comp_scene.frame_preview_start + \
-                strip.frame_final_duration
+                strip.frame_final_duration - 1
             comp_scene.frame_current = comp_scene.frame_preview_start
         else:
+            comp_scene.frame_start = 1
             comp_scene.frame_end = self.comp_strip_end - self.comp_strip_start
 
         # Copy render settings
@@ -410,7 +413,7 @@ class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Prepare data
     def invoke(self, context, event):
         # Generate compositing scene name
-        self.comp_scene_name = "Composite_"+ context.selected_sequences[0].name
+        self.comp_scene_name = "Composite_"+ self.get_source_strips[-1].name
 
         # Initialize general effect operator
         return EffectAddOperator.invoke(self, context, event)
@@ -776,7 +779,7 @@ class SwitchToCompositingOperator(bpy.types.Operator):
             strip.scene.frame_preview_start = strip.scene.frame_start + \
                 strip.frame_offset_start
             strip.scene.frame_preview_end = strip.scene.frame_preview_start + \
-                strip.frame_final_duration
+                strip.frame_final_duration - 1
 
         # Switch to composite screen
         switch_screen(context, strip.scene.comp_props.composite_screen)
