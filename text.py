@@ -18,7 +18,7 @@
 
 # Add-on meta data
 bl_info = {
-    "name": "Add Text Effect",
+    "name": "Add Rendered Text Effect",
     "author": "Salatfreak",
     "version": (0, 1),
     "blender": (2, 75),
@@ -65,7 +65,7 @@ def switch_screen(context, screen_name):
 
 # Text scene property group
 class SceneTextProps(bpy.types.PropertyGroup):
-    # Is text Scene property
+    # Is text scene property
     is_text_scene = bpy.props.BoolProperty(name="Is text Scene", default=False)
 
     # Parent scene ID
@@ -100,7 +100,7 @@ class ImageStripTextProps(bpy.types.PropertyGroup):
 # Add rendered text operator
 class RenderedTextAddOperator(bpy.types.Operator):
     # Meta data
-    bl_idname="sequencer.rendered_text_effect_add"
+    bl_idname="vse_text.rendered_text_effect_add"
     bl_label="Add Rendered Text Effect"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -219,7 +219,7 @@ class RenderedTextAddOperator(bpy.types.Operator):
         # Position text
         text_object.scale.xyz = 0.3
 
-        # Switch back to sequencing scene
+        # Switch back to sequencer scene
         context.screen.scene = sequencer_scene
 
         return {'FINISHED'}
@@ -238,7 +238,7 @@ def rendered_text_button(self, context):
 # Render text operator
 class RenderTextOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "sequencer.render_text"
+    bl_idname = "vse_text.render_text"
     bl_label = "Render Text"
     bl_description = "Render Text Scene"
 
@@ -270,7 +270,7 @@ class RenderTextOperator(bpy.types.Operator):
 # Switch to text editing operator
 class SwitchToTextEditingOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "sequencer.switch_to_text_editing"
+    bl_idname = "vse_text.switch_to_text_editing"
     bl_label = "Switch to Text Editing"
     bl_description = "Switch to text scene editing"
 
@@ -302,7 +302,7 @@ class SwitchToTextEditingOperator(bpy.types.Operator):
 # Remove text strip operator
 class RemoveTextStripOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "sequencer.remove_text_strip"
+    bl_idname = "vse_text.remove_text_strip"
     bl_label = "Remove text strip"
     bl_description = "Remove text scene and sequencer strip"
 
@@ -313,7 +313,7 @@ class RemoveTextStripOperator(bpy.types.Operator):
         strip = context.scene.sequence_editor.active_strip
         return (strip is not None and strip.type == 'IMAGE' and \
             strip.text_props.is_text_strip and \
-            getScene(strip.text_props.scene_id) is not None)
+            get_scene(strip.text_props.scene_id) is not None)
 
     # Show confirmation dialog
     def invoke(self, context, event):
@@ -326,11 +326,16 @@ class RemoveTextStripOperator(bpy.types.Operator):
         scene = get_scene(strip.text_props.scene_id)
 
         # Remove scene
-        if scene is not None:
-            bpy.data.scenes.remove(scene)
+        bpy.data.scenes.remove(scene)
 
-        # Remove strip
-        context.scene.sequence_editor.sequences.remove(strip)
+        # Remove strip (taking groups into account)
+        selected = context.selected_sequences
+        for seq in selected:
+            seq.select = False
+        strip.select = True
+        bpy.ops.sequencer.delete()
+        for seq in selected:
+            seq.select = True
 
         return {'FINISHED'}
 
@@ -341,65 +346,62 @@ class TextStripPanel(bpy.types.Panel):
     bl_space_type = "SEQUENCE_EDITOR"
     bl_region_type = "UI"
 
-    # Show only for composite strips
+    # Show only for text strips
     @classmethod
     def poll(self, context):
         if context.scene.sequence_editor is None: return False
         strip = context.scene.sequence_editor.active_strip
         return (strip is not None and strip.type =='IMAGE' and \
             strip.text_props.is_text_strip and \
-            getScene(strip.text_props.scene_id) is not None)
+            get_scene(strip.text_props.scene_id) is not None)
 
     # Draw panel
     def draw(self, context):
         strip = context.scene.sequence_editor.active_strip
         scene = get_scene(strip.text_props.scene_id)
 
-        # Scene specific elements
-        if scene is not None:
-            text_objects = list(filter(
-                lambda o: o.type == 'FONT', scene.objects
-            ))
-            # Text specific elements
-            if len(text_objects) == 1:
-                text_object = text_objects[0]
-                self.layout.prop(text_object.data, "body", text="")
-                
-                # Color align row
-                color_align_row = self.layout.row()
-                if len(text_object.material_slots) == 1 and \
-                    text_object.material_slots[0].material is not None:
-                    material = text_object.material_slots[0].material
-                
-                # Color row
-                color_row = self.layout.row()
-                color_row.prop(material, "diffuse_color", text="")
-                if scene.world is not None:
-                    color_row.prop(scene.render, "alpha_mode", text="")
-                    color_row.prop(scene.world, "horizon_color", text="")
+        text_objects = list(filter(
+            lambda o: o.type == 'FONT', scene.objects
+        ))
 
-                # Positioning
-                self.layout.prop(text_object.data, "size")
+        # Text
+        if len(text_objects) == 1:
+            text_object = text_objects[0]
+            self.layout.prop(text_object.data, "body", text="")
+            
+            # Color align row
+            color_align_row = self.layout.row()
+            if len(text_object.material_slots) == 1 and \
+                text_object.material_slots[0].material is not None:
+                material = text_object.material_slots[0].material
+            
+            # Color row
+            color_row = self.layout.row()
+            color_row.prop(material, "diffuse_color", text="")
+            if scene.world is not None:
+                color_row.prop(scene.render, "alpha_mode", text="")
+                color_row.prop(scene.world, "horizon_color", text="")
 
-            # Rendering
-            self.layout.prop(scene.render, "filepath", text="")
-            self.layout.operator(
-                RenderTextOperator.bl_idname, text="Render", icon='RENDER_STILL'
-            )
-            
-            # Edit row
-            self.layout.separator()
-            self.layout.operator(
-                SwitchToTextEditingOperator.bl_idname, text="Edit Text",
-                icon='TEXT'
-            )
-            self.layout.prop(
-                scene.text_props, 'edit_screen', text="", icon='SPLITSCREEN'
-            )
-            
-            self.layout.operator(
-                RemoveTextStripOperator.bl_idname, text="Remove", icon='X'
-            )
+        # Rendering
+        self.layout.prop(scene.render, "filepath", text="")
+        self.layout.operator(
+            RenderTextOperator.bl_idname, text="Render", icon='RENDER_STILL'
+        )
+        
+        # Edit
+        self.layout.separator()
+        self.layout.operator(
+            SwitchToTextEditingOperator.bl_idname, text="Edit Text",
+            icon='TEXT'
+        )
+        self.layout.prop(
+            scene.text_props, 'edit_screen', text="", icon='SPLITSCREEN'
+        )
+        
+        # Removal
+        self.layout.operator(
+            RemoveTextStripOperator.bl_idname, text="Remove", icon='X'
+        )
 
 ### Text scene panel ###
 #############################
@@ -407,11 +409,11 @@ class TextStripPanel(bpy.types.Panel):
 # Switch to sequence editor operator
 class SwitchToSequenceEditorOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "view3d.switch_to_sequence_editor"
+    bl_idname = "vse_text.switch_to_sequence_editor"
     bl_label = "Back to Sequencer"
     bl_description = "Switch back to the Sequence Editor"
 
-    # Show only for text strips
+    # Show only for text scenes
     @classmethod
     def poll(self, context):
         return context.scene.text_props.is_text_scene
@@ -440,7 +442,7 @@ class TextScenePanel(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
 
-    # Show only for text strips
+    # Show only for text scenes
     @classmethod
     def poll(self, context):
         return context.scene.text_props.is_text_scene

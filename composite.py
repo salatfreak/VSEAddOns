@@ -62,6 +62,19 @@ def switch_screen(context, screen_name):
         # Switch to next screen
         bpy.ops.screen.screen_set(delta=1)
 
+# Get containing sequence list
+def get_sequence_list(scene, strip):
+    sequenceLists = [scene.sequence_editor.sequences]
+
+    # Search depth first for sequence list
+    while len(sequenceLists) != 0:
+        seqList = sequenceLists.pop()
+        for seq in seqList:
+            if seq == strip:
+                return seqList
+            elif seq.type == 'META':
+                sequenceLists.append(seq.sequences)
+
 ### RegExp preparation ###
 ##########################
 
@@ -157,7 +170,7 @@ class EffectAddOperator():
         self.comp_strip_channel = (highest_channel + 1) % (MAX_CHANNEL + 1)
 
         # Get sequences per channel
-        sequences = context.scene.sequence_editor.sequences
+        sequences = get_sequence_list(context.scene, self.source_strips[0])
         channel_seqs = [[] for i in range(MAX_CHANNEL + 1)]
         for seq in sequences:
             channel_seqs[seq.channel].append(seq)
@@ -178,7 +191,7 @@ class EffectAddOperator():
 
         # Require fitting channel
         if not channel_found:
-            self.report({'ERROR'}, "No fitting channel found")
+            self.report({'ERROR'}, "Fitting channel required")
             return {'CANCELLED'}
 
         # Call execute
@@ -265,7 +278,7 @@ class EffectAddOperator():
         comp_scene.comp_props.parent_screen = context.screen.name
         comp_scene.use_nodes = True
 
-        # Set scene end
+        # Set up scene frames
         if len(self.source_strips) == 1:
             strip = self.source_strips[0]
             comp_scene.frame_start = strip.animation_offset_start + 1
@@ -391,7 +404,7 @@ class EffectAddOperator():
 # Composite effect
 class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="sequencer.composite_effect_add"
+    bl_idname="vse_composite.composite_effect_add"
     bl_label="Add Composite Effect"
 
     # Prepare data
@@ -449,7 +462,7 @@ def composite_button(self, context):
 # Keying effect
 class KeyingEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="sequencer.keying_effect_add"
+    bl_idname="vse_composite.keying_effect_add"
     bl_label="Add Keying Effect"
 
     # Prepare data
@@ -540,7 +553,7 @@ def keying_button(self, context):
 # Pixelize effect
 class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="sequencer.pixelize_effect_add"
+    bl_idname="vse_composite.pixelize_effect_add"
     bl_label="Add Pixelize Effect"
 
     # Prepare data
@@ -733,98 +746,13 @@ def pixelize_button(self, context):
         icon='PLUGIN'
     )
 
-# Transition effect
-class TransitionEffectAddOperator(bpy.types.Operator, EffectAddOperator):
-    # Meta data
-    bl_idname="sequencer.transition_effect_add"
-    bl_label="Add Transition Effect"
-
-    # Prepare data
-    def invoke(self, context, event):
-        # Require two strips to be selected
-        if len(context.selected_sequences) < 2:
-            self.report({'ERROR'}, "2 selected sequence strips are needed")
-            return {'CANCELLED'}
-
-        # Generate compositing scene name
-        self.comp_scene_name = "Transition_"+ context.selected_sequences[0].name
-
-        # Initialize general effect operator
-        return EffectAddOperator.invoke(self, context, event)
-
-    # Get source strips
-    def get_source_strips(self, context):
-        return EffectAddOperator.get_source_strips(self, context)[-2:]
-
-    # Set up nodes
-    def set_up_nodes(self, scene, input_nodes):
-        # Set up input and scale nodes
-        scale_nodes = EffectAddOperator.set_up_nodes(self, scene, input_nodes)
-
-        # Get node tree
-        node_tree = scene.node_tree
-
-        # Add mask node
-        mask_node = node_tree.nodes.new('CompositorNodeMask')
-        mask_node.location = scale_nodes[0].location + Vector((-180, 220))
-
-        # Add mix node
-        mix_node = node_tree.nodes.new('CompositorNodeMixRGB')
-        mix_node.location = scale_nodes[0].location + Vector((180, 120))
-
-        # Connect nodes
-        node_tree.links.new(
-            mask_node.outputs['Mask'], mix_node.inputs['Fac']
-        )
-        node_tree.links.new(
-            scale_nodes[0].outputs['Image'], mix_node.inputs[1]   
-        )
-        node_tree.links.new(
-            scale_nodes[1].outputs['Image'], mix_node.inputs[2]   
-        )
-
-        # Add composite node
-        composite_node = node_tree.nodes.new('CompositorNodeComposite')
-        composite_node.location = mix_node.location + Vector((180, 0))
-
-        # Connect nodes
-        node_tree.links.new(
-            mix_node.outputs['Image'],
-            composite_node.inputs['Image']
-        )
-
-        # Add viewer node
-        viewer_node = node_tree.nodes.new('CompositorNodeViewer')
-        viewer_node.location = composite_node.location + Vector((0, -160))
-
-        # Connect nodes
-        node_tree.links.new(
-            mix_node.outputs['Image'], viewer_node.inputs['Image']
-        )
-
-        # Deselect all nodes
-        for node in node_tree.nodes:
-            node.select = False
-            
-        # Center nodes
-        for node in node_tree.nodes:
-            node.location += Vector((-80, 520))
-
-# Transition button
-def transition_button(self, context):
-    self.layout.operator(
-        TransitionEffectAddOperator.bl_idname,
-        text="Transition",
-        icon='PLUGIN'
-    )
-
 ### Composite strip Panel ###
 #############################
 
 # Switch to composite operator
 class SwitchToCompositingOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "sequencer.switch_to_compositing"
+    bl_idname = "vse_composite.switch_to_compositing"
     bl_label = "Switch to compositing"
     bl_description = "Switch to scene compositing"
 
@@ -860,7 +788,7 @@ class SwitchToCompositingOperator(bpy.types.Operator):
 
 # Remove composite strip operator
 class RemoveCompositeStripOperator(bpy.types.Operator):
-    bl_idname = "sequencer.remove_composite_strip"
+    bl_idname = "vse_composite.remove_composite_strip"
     bl_label = "Remove composite strip"
     bl_description = "Remove composite scene and sequencer strip"
 
@@ -884,8 +812,14 @@ class RemoveCompositeStripOperator(bpy.types.Operator):
         # Remove scene
         bpy.data.scenes.remove(strip.scene)
 
-        # Remove strip
-        context.scene.sequence_editor.sequences.remove(strip)
+        # Remove strip (taking groups into account)
+        selected = context.selected_sequences
+        for seq in selected:
+            seq.select = False
+        strip.select = True
+        bpy.ops.sequencer.delete()
+        for seq in selected:
+            seq.select = True
 
         return {'FINISHED'}
 
@@ -924,9 +858,9 @@ class CompositeStripPanel(bpy.types.Panel):
 #############################
 
 # Switch to sequence editor operator
-class SwitchToSequenceEditorOperator(bpy.types.Operator):
+class BackToSequenceEditorOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "node.switch_to_sequence_editor"
+    bl_idname = "node.back_to_sequence_editor"
     bl_label = "Back to Sequencer"
     bl_description = "Switch back to the Sequence Editor"
 
@@ -952,7 +886,7 @@ class SwitchToSequenceEditorOperator(bpy.types.Operator):
 # Switch to mask editing
 class SwitchToMaskOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "node.switch_to_mask"
+    bl_idname = "vse_composite.switch_to_mask"
     bl_label = "Edit Mask"
     bl_description = "Edit mask for compositing"
 
@@ -1046,7 +980,7 @@ class CompositeScenePanel(bpy.types.Panel):
     # Draw panel
     def draw(self, context):
         self.layout.operator(
-            SwitchToSequenceEditorOperator.bl_idname, icon='SEQ_SEQUENCER'
+            BackToSequenceEditorOperator.bl_idname, icon='SEQ_SEQUENCER'
         )
         self.layout.operator(SwitchToMaskOperator.bl_idname, icon='MOD_MASK')
         self.layout.prop(
@@ -1057,9 +991,9 @@ class CompositeScenePanel(bpy.types.Panel):
 ##################
 
 # Switch to mask editing
-class SwitchToCompositeScreenOperator(bpy.types.Operator):
+class BackToCompositeScreenOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "mask.switch_to_composite"
+    bl_idname = "vse_composite.back_to_compositing"
     bl_label = "Switch to compositing"
     bl_description = "Swich to compositing Scene"
 
@@ -1099,7 +1033,7 @@ class MaskPanel(bpy.types.Panel):
     # Draw panel
     def draw(self, context):
         self.layout.operator(
-            SwitchToCompositeScreenOperator.bl_idname, text="Composite",
+            BackToCompositeScreenOperator.bl_idname, text="Composite",
             icon='NODETREE'
         )
 
@@ -1120,7 +1054,6 @@ def register():
     bpy.types.SEQUENCER_MT_add_effect.append(composite_button)
     bpy.types.SEQUENCER_MT_add_effect.append(keying_button)
     bpy.types.SEQUENCER_MT_add_effect.append(pixelize_button)
-    bpy.types.SEQUENCER_MT_add_effect.append(transition_button)
 
 # Unregister module
 def unregister():
@@ -1134,7 +1067,6 @@ def unregister():
     bpy.types.SEQUENCER_MT_add_effect.remove(composite_button)
     bpy.types.SEQUENCER_MT_add_effect.remove(keying_button)
     bpy.types.SEQUENCER_MT_add_effect.remove(pixelize_button)
-    bpy.types.SEQUENCER_MT_add_effect.remove(transition_button)
 
 # Register if executed as script
 if __name__ == '__main__':
