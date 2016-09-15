@@ -31,7 +31,7 @@ bl_info = {
 
 # Constants
 MAX_CHANNEL = 32
-DEFAULT_DIR = "//assets/titles/"
+DEFAULT_DIR = "//assets/title/"
 
 # Import modules
 import bpy

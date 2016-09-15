@@ -216,8 +216,6 @@ class EffectAddOperator():
                 image_path = os.path.join(
                     strip.directory, strip.elements[0].filename
                 )
-            else:
-                return node
 
             # Find image
             image = None
@@ -413,7 +411,8 @@ class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Prepare data
     def invoke(self, context, event):
         # Generate compositing scene name
-        self.comp_scene_name = "Composite_"+ self.get_source_strips[-1].name
+        self.comp_scene_name = "Composite_"+ \
+            self.get_source_strips(context)[-1].name
 
         # Initialize general effect operator
         return EffectAddOperator.invoke(self, context, event)
