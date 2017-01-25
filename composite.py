@@ -34,25 +34,15 @@ MAX_CHANNEL = 32
 
 # Import modules
 import bpy
-import os
+from os import path
 import re
-import uuid
+import math
 from functools import reduce
 from mathutils import Vector
 
 ### Helper functions ###
 ########################
-
-# Get scene from ID
-def get_scene(scene_id):
-    # Find and return scene with matching ID
-    for scene in bpy.data.scenes:
-        if scene.comp_props.id == scene_id:
-            return scene
-            
-    # Return None if no scene matches
-    return None
-    
+ 
 # Switch screen
 def switch_screen(context, screen_name):
     for i in range(len(bpy.data.screens)):
@@ -93,28 +83,9 @@ class SceneCompositeProps(bpy.types.PropertyGroup):
         name="Is Composite Scene", default=False
     )
     
-    # Scene ID property
-    id = bpy.props.StringProperty(name="Unique ID", default="")
-
-    # Parent scene ID property
-    parent_scene_id = bpy.props.StringProperty(
-        name="Parent scene ID", default=""
-    )
-
     # Get scenes
     def get_screens(self, context):
         return [(scr.name, scr.name, "") for scr in bpy.data.screens]
-
-    # Parent screen property
-    parent_screen = bpy.props.EnumProperty(
-        name="Parent screen", items=get_screens
-    )
-
-    # Composite screen property
-    composite_screen = bpy.props.EnumProperty(
-        name="Composite screen", description="Screen to edit composition in",
-        items=get_screens
-    )
 
     # Mask screen property
     mask_screen = bpy.props.EnumProperty(name="Mask screen", items=get_screens)
@@ -213,7 +184,7 @@ class EffectAddOperator():
                 image_path = strip.filepath
             else:
                 image_source = 'SEQUENCE' if len(strip.elements) > 1 else 'FILE'
-                image_path = os.path.join(
+                image_path = path.join(
                     strip.directory, strip.elements[0].filename
                 )
 
@@ -267,15 +238,9 @@ class EffectAddOperator():
             # Return node
             return node
 
-        # Assign scene id
-        if context.scene.comp_props.id == "":
-            context.scene.comp_props.id = uuid.uuid4().hex
-
         # Add new scene
         comp_scene = bpy.data.scenes.new(self.comp_scene_name)
-        comp_scene.comp_props.is_comp_scene = True
-        comp_scene.comp_props.parent_scene_id = context.scene.comp_props.id
-        comp_scene.comp_props.parent_screen = context.screen.name
+        comp_scene.sf_comp_props.is_comp_scene = True
         comp_scene.use_nodes = True
 
         # Set up scene frames
@@ -318,18 +283,19 @@ class EffectAddOperator():
         # Reset channel
         comp_strip.channel = self.comp_strip_channel
 
-        # Find first screen containing "composit"
-        for screen in bpy.data.screens:
-            if "composit" in screen.name.lower():
-                comp_scene.comp_props.composite_screen = screen.name
-                break
+        # Set edit screen for scene tools addon
+        if hasattr(comp_scene, 'sf_scene_props'):
+            for screen in bpy.data.screens:
+                if "composit" in screen.name.lower():
+                    comp_scene.sf_scene_props.edit_screen = screen.name
+                    break
 
-        # Find first screen containing "tracking" or "mask"
+        # Set mask screen
         for screen in bpy.data.screens:
-            if "tracking" in screen.name.lower() or \
-               "mask" in screen.name.lower():
-               comp_scene.comp_props.mask_screen = screen.name
-               break
+            if "tracking" in screen.name.lower() \
+            or "mask" in screen.name.lower():
+                comp_scene.sf_comp_props.mask_screen = screen.name
+                break
 
         # Select new strip
         for strip in context.selected_sequences:
@@ -358,7 +324,7 @@ class EffectAddOperator():
     # Get source strips
     def get_source_strips(self, context):
         # Get selected strips
-        source_strips = context.selected_sequences
+        source_strips = context.selected_sequences or []
 
         # Put active strip to end
         for strip in source_strips:
@@ -405,7 +371,7 @@ class EffectAddOperator():
 # Composite effect
 class CompositeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="vse_composite.composite_effect_add"
+    bl_idname="sf_addons.composite_effect_add"
     bl_label="Add Composite Effect"
 
     # Prepare data
@@ -464,7 +430,7 @@ def composite_button(self, context):
 # Keying effect
 class KeyingEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="vse_composite.keying_effect_add"
+    bl_idname="sf_addons.keying_effect_add"
     bl_label="Add Keying Effect"
 
     # Prepare data
@@ -555,7 +521,7 @@ def keying_button(self, context):
 # Pixelize effect
 class PixelizeEffectAddOperator(bpy.types.Operator, EffectAddOperator):
     # Meta data
-    bl_idname="vse_composite.pixelize_effect_add"
+    bl_idname="sf_addons.pixelize_effect_add"
     bl_label="Add Pixelize Effect"
 
     # Prepare data
@@ -748,154 +714,331 @@ def pixelize_button(self, context):
         icon='PLUGIN'
     )
 
-### Composite strip Panel ###
-#############################
+### Transform3D Operator ###
+############################
 
-# Switch to composite operator
-class SwitchToCompositingOperator(bpy.types.Operator):
+# Add transform effect operator
+class Transform3DEffectAddOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "vse_composite.switch_to_compositing"
-    bl_label = "Switch to compositing"
-    bl_description = "Switch to scene compositing"
+    bl_idname="sf_addons.transform_3d_effect_add"
+    bl_label="Add Transform 3D Effect"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    # Show only for composite strips
+    # Show only in sequence editor
     @classmethod
-    def poll(self, context):
-        if context.scene.sequence_editor is None: return False
-        strip = context.scene.sequence_editor.active_strip
-        return (strip is not None and strip.type == 'SCENE' and \
-            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
+    def poll(cls, context):
+        return (context.space_data.type == 'SEQUENCE_EDITOR')
 
-    # Switch scene
+    # Prepare data
     def invoke(self, context, event):
-        strip = context.scene.sequence_editor.active_strip
+        # Get source strips
+        self.source_strips = self.get_source_strips(context)
 
-        # Set scene properties
-        strip.scene.comp_props.parent_screen = context.screen.name
-        
-        # Update preview range
-        if strip.scene.use_preview_range:
-            strip.scene.frame_preview_start = strip.scene.frame_start + \
-                strip.frame_offset_start
-            strip.scene.frame_preview_end = strip.scene.frame_preview_start + \
-                strip.frame_final_duration - 1
+        # Require at least one strip
+        if len(self.source_strips) == 0:
+            self.report(
+                {'ERROR'}, "At least one selected sequence strip is needed"
+            )
+            return {'CANCELLED'}
 
-        # Switch to composite screen
-        switch_screen(context, strip.scene.comp_props.composite_screen)
+        # Require all strips to be images or movies
+        for seq in self.source_strips:
+            if seq.type not in {'MOVIE', 'IMAGE'}:
+                self.report({'ERROR'}, "Only Image and Movie strips allowed")
+                return {'CANCELLED'}
 
-        # Switch to scene
-        context.screen.scene = strip.scene
+        # Find strip start and end frame
+        self.transform_strip_start = max(
+            [strip.frame_final_start for strip in self.source_strips]
+        )
+        self.transform_strip_end = min(
+            [strip.frame_final_end for strip in self.source_strips]
+        )
 
-        return {'FINISHED'}
+        # Require shared frames
+        if self.transform_strip_start >= self.transform_strip_end:
+            self.report({'ERROR'}, "Strips must have shared frames")
+            return {'CANCELLED'}
 
-# Remove composite strip operator
-class RemoveCompositeStripOperator(bpy.types.Operator):
-    bl_idname = "vse_composite.remove_composite_strip"
-    bl_label = "Remove composite strip"
-    bl_description = "Remove composite scene and sequencer strip"
+        # Get following channel
+        highest_channel = max(
+            [strip.channel for strip in self.source_strips]
+        )
+        self.transform_strip_channel = (highest_channel + 1) % (MAX_CHANNEL + 1)
 
-    # Show only for composite strips
-    @classmethod
-    def poll(self, context):
-        if context.scene.sequence_editor is None: return False
-        strip = context.scene.sequence_editor.active_strip
-        return (strip is not None and strip.type == 'SCENE' and \
-            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
+        # Get sequences per channel
+        sequences = get_sequence_list(context.scene, self.source_strips[0])
+        channel_seqs = [[] for i in range(MAX_CHANNEL + 1)]
+        for seq in sequences:
+            channel_seqs[seq.channel].append(seq)
 
-    # Remove strip
-    def invoke(self, context, event):
-        # Confirmation dialog
-        wm = context.window_manager
-        return wm.invoke_confirm(self, event)
-        
+        # Find first fitting channel
+        channel_found = False
+        while self.transform_strip_channel != highest_channel:
+            # Count up on conflict
+            if any(not(seq.frame_final_end < self.transform_strip_start or \
+                self.transform_strip_end < seq.frame_final_start)
+                    for seq in channel_seqs[self.transform_strip_channel]):
+                self.transform_strip_channel = \
+                    (self.transform_strip_channel % MAX_CHANNEL) + 1
+            # Stop search else
+            else:
+                channel_found = True
+                break
+
+        # Require fitting channel
+        if not channel_found:
+            self.report({'ERROR'}, "Fitting channel required")
+            return {'CANCELLED'}
+
+        # Call execute
+        return self.execute(context)
+
+    # Add rendered text
     def execute(self, context):
-        strip = context.scene.sequence_editor.active_strip
+        se = context.scene.sequence_editor
+        seq_scene = context.scene
 
-        # Remove scene
-        bpy.data.scenes.remove(strip.scene)
+        # Create image plane
+        def create_plane(strip, y_offset, multi):
+            # Add image plane
+            bpy.ops.mesh.primitive_plane_add()
+            image_plane = context.scene.objects.active
+            image_plane.name = "Plane"+ strip.name
 
-        # Remove strip (taking groups into account)
-        selected = context.selected_sequences
-        for seq in selected:
-            seq.select = False
-        strip.select = True
-        bpy.ops.sequencer.delete()
-        for seq in selected:
-            seq.select = True
+            # Scale image plane
+            res = Vector((
+                context.scene.render.resolution_x,
+                context.scene.render.resolution_y
+            ))
+            if res.x >= res.y:
+                image_plane.scale.y = res.y / res.x
+            else:
+                image_plane.scale.x = res.x / res.y
+            image_plane.rotation_euler[0] = math.radians(90)
+            bpy.ops.object.transform_apply(rotation=True, scale=True)
+            image_plane.location.y = y_offset
+
+            # Set up material
+            bpy.ops.object.material_slot_add()
+            plane_material = bpy.data.materials.new(
+                "Transform3D"+ strip.name
+            )
+            plane_material.use_shadeless = True
+            plane_material.use_transparency = True
+            plane_material.alpha = 0
+            image_plane.material_slots[0].material = plane_material
+            plane_material.texture_slots.add()
+
+            # Unwrap plane
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.uv.unwrap()
+            bpy.ops.object.mode_set(mode='OBJECT')
+            layer = image_plane.data.uv_layers[0]
+            layer.data[2].uv[1] = layer.data[2].uv[0]
+            layer.data[3].uv[1] = layer.data[2].uv[1]
+
+            # Set up texture slot
+            plane_material.texture_slots[0].uv_layer = layer.name
+            plane_material.texture_slots[0].use_map_alpha = True
+
+            # Setup texture
+            plane_texture = bpy.data.textures.new(plane_material.name, 'IMAGE')
+
+            # Get file path
+            if strip.type == 'MOVIE':
+                image_source = 'MOVIE'
+                image_path = strip.filepath
+            else:
+                image_source = 'SEQUENCE' if len(strip.elements) > 1 else 'FILE'
+                image_path = path.join(
+                    strip.directory, strip.elements[0].filename
+                )
+
+            # Find image
+            image = None
+            for img in bpy.data.images:
+                if img.filepath == image_path and img.source == image_source:
+                    image = img
+                    break
+
+            # Load image if not found
+            if image is None:
+                try:
+                    image = bpy.data.images.load(image_path)
+                    image.source = image_source
+                except: pass
+
+            # Assign image
+            plane_texture.image = image
+
+            # Assign texture
+            plane_material.texture_slots[0].texture = plane_texture
+
+            # Set up image
+            img_offset = 0
+            if strip.type == 'MOVIE':
+                # Auto refresh frames
+                plane_texture.image_user.use_auto_refresh = True
+            elif len(strip.elements) > 1:
+                # Match iamge file
+                match = img_seq_re.match(strip.elements[0].filename)
+
+                # Set offset
+                img_offset = int(
+                    match.string[match.regs[2][0]:match.regs[2][1]]
+                ) -1
+
+                # Auto refresh frames
+                plane_texture.image_user.use_auto_refresh = True
+
+            # Set up frames
+            user = plane_texture.image_user
+            if multi:
+                user.frame_offset = self.transform_strip_start \
+                    - strip.frame_start + strip.animation_offset_start \
+                    + img_offset
+                user.frame_duration = self.transform_strip_end \
+                    - self.transform_strip_start
+            else:
+                user.frame_start = strip.animation_offset_start + 1
+                user.frame_offset = strip.animation_offset_start + img_offset
+                user.frame_duration = strip.frame_duration
+
+            # Return image plane
+            return image_plane
+
+        # Add new scene
+        transform_scene = bpy.data.scenes.new(
+            "Transform3D_"+ self.source_strips[-1].name
+        )
+
+        # Set up scene frames
+        if len(self.source_strips) == 1:
+            strip = self.source_strips[0]
+            transform_scene.frame_start = strip.animation_offset_start + 1
+            transform_scene.frame_end = strip.animation_offset_start + max(
+                strip.frame_duration, strip.frame_final_duration
+            )
+            transform_scene.use_preview_range = True
+            transform_scene.frame_preview_start = strip.frame_offset_start + \
+                strip.animation_offset_start + 1
+            transform_scene.frame_preview_end = \
+                transform_scene.frame_preview_start \
+                + strip.frame_final_duration - 1
+            transform_scene.frame_current = transform_scene.frame_preview_start
+        else:
+            transform_scene.frame_start = 1
+            transform_scene.frame_end = \
+                self.transform_strip_end - self.transform_strip_start
+
+        # Copy render settings
+        transform_scene.render.resolution_x = seq_scene.render.resolution_x
+        transform_scene.render.resolution_y = seq_scene.render.resolution_y
+        transform_scene.render.resolution_percentage = 100
+        transform_scene.render.fps = seq_scene.render.fps
+
+        # Add scene strip
+        transform_strip = se.sequences.new_scene(
+            transform_scene.name, transform_scene,
+            self.transform_strip_channel,
+            self.transform_strip_start
+        )
+
+        # Position strip
+        if len(self.source_strips) == 1:
+            transform_strip.frame_start = self.source_strips[0].frame_start
+            transform_strip.frame_offset_start = \
+                self.source_strips[0].frame_offset_start
+            transform_strip.frame_offset_end = \
+                self.source_strips[0].frame_offset_end
+
+        # Reset channel
+        transform_strip.channel = self.transform_strip_channel
+
+        # Set edit screen for scene tools addon
+        if hasattr(transform_scene, 'sf_scene_props'):
+            # Find first screen containing default
+            screen_found = False
+            for screen in bpy.data.screens:
+                if "default" in screen.name.lower():
+                    transform_scene.sf_scene_props.edit_screen = screen.name
+                    screen_found = True
+                    break
+
+            # Find first screen containing 3d else
+            if not screen_found:
+                for screen in bpy.data.screens:
+                    if "3d" in screen.name.lower():
+                        transform_scene.sf_scene_props.edit_screen = screen.name
+                        break
+
+        # Select new strip
+        for strip in context.selected_sequences:
+            strip.select = False
+        transform_strip.select = True
+        se.active_strip = transform_strip
+
+        # Set up transform scene
+        context.screen.scene = transform_scene
+        transform_scene.render.alpha_mode = 'TRANSPARENT'
+
+        # Add camera
+        bpy.ops.object.camera_add()
+        transform_scene.camera = transform_scene.objects.active
+        transform_scene.camera.location.y = \
+            - transform_scene.camera.data.lens / 16
+        transform_scene.camera.rotation_euler[0] = math.radians(90)
+
+        # Add image planes
+        if len(self.source_strips) == 1:
+            create_plane(self.source_strips[0], 0, False)
+        else:
+            for offset, strip in enumerate(self.source_strips):
+                create_plane(strip, offset * 0.1, True)
+
+        # Switch back to sequencer scene
+        context.screen.scene = seq_scene
 
         return {'FINISHED'}
 
-# Composite strip Panel
-class CompositeStripPanel(bpy.types.Panel):
-    # Meta data
-    bl_label = "Composite Strip"
-    bl_space_type = "SEQUENCE_EDITOR"
-    bl_region_type = "UI"
+    # Get source strips
+    def get_source_strips(self, context):
+        # Get selected strips
+        source_strips = context.selected_sequences or []
 
-    # Show only for composite strips
-    @classmethod
-    def poll(self, context):
-        if context.scene.sequence_editor is None: return False
-        strip = context.scene.sequence_editor.active_strip
-        return (strip is not None and strip.type =='SCENE' and \
-            strip.scene is not None and strip.scene.comp_props.is_comp_scene)
+        # Put active strip to end
+        for strip in source_strips:
+            if strip == context.scene.sequence_editor.active_strip:
+                source_strips.remove(strip)
+                source_strips.append(strip)
+                break
 
-    # Draw panel
-    def draw(self, context):
-        strip = context.scene.sequence_editor.active_strip
-        self.layout.operator(
-            SwitchToCompositingOperator.bl_idname, text="Composite",
-            icon='NODETREE'
-        )
-        self.layout.prop(
-            strip.scene.comp_props, 'composite_screen', text="",
-            icon='SPLITSCREEN'
-        )
-        self.layout.prop(strip.scene.render, 'resolution_percentage')
-        self.layout.operator(
-            RemoveCompositeStripOperator.bl_idname, text="Remove", icon='X'
-        )
+        # Return source strips
+        return source_strips
+
+# Rendered text button
+def transform_3d_button(self, context):
+    self.layout.operator(
+        Transform3DEffectAddOperator.bl_idname,
+        text="Transform 3D",
+        icon='PLUGIN'
+    )
 
 ### Composite scene Panel ###
 #############################
 
-# Switch to sequence editor operator
-class BackToSequenceEditorOperator(bpy.types.Operator):
-    # Meta data
-    bl_idname = "node.back_to_sequence_editor"
-    bl_label = "Back to Sequencer"
-    bl_description = "Switch back to the Sequence Editor"
-
-    # Show only for composite strips
-    @classmethod
-    def poll(self, context):
-        return context.scene.comp_props.is_comp_scene and \
-            get_scene(context.scene.comp_props.parent_scene_id) is not None
-
-    # Switch scene
-    def invoke(self, context, event):
-        # Get composite scene
-        comp_props = context.scene.comp_props
-
-        # Switch to sequence editing screen
-        switch_screen(context, comp_props.parent_screen)
-
-        # Switch to parent scene
-        context.screen.scene = get_scene(comp_props.parent_scene_id)
-
-        return {'FINISHED'}
-
 # Switch to mask editing
 class SwitchToMaskOperator(bpy.types.Operator):
     # Meta data
-    bl_idname = "vse_composite.switch_to_mask"
+    bl_idname = "sf_addons.switch_to_composite_mask"
     bl_label = "Edit Mask"
     bl_description = "Edit mask for compositing"
 
     # Show only for composite strips with valid 
     @classmethod
     def poll(self, context):
-        return context.scene.comp_props.is_comp_scene
+        return context.scene.sf_comp_props.is_comp_scene
 
     # Switch scene
     def invoke(self, context, event):
@@ -903,10 +1046,10 @@ class SwitchToMaskOperator(bpy.types.Operator):
         composite_scene = context.scene
 
         # Get composite scene
-        comp_props = context.scene.comp_props
+        sf_comp_props = context.scene.sf_comp_props
 
         # Switch to screen
-        switch_screen(context, comp_props.mask_screen)
+        switch_screen(context, sf_comp_props.mask_screen)
 
         # Switch to scene
         context.screen.scene = composite_scene
@@ -970,73 +1113,21 @@ class SwitchToMaskOperator(bpy.types.Operator):
 # Switch to sequence editor Panel
 class CompositeScenePanel(bpy.types.Panel):
     # Meta data
-    bl_label = "Composite Strip"
+    bl_label = "Composite Scene"
     bl_space_type = "NODE_EDITOR"
     bl_region_type = "UI"
 
     # Show only for composite strips
     @classmethod
     def poll(self, context):
-        return context.scene.comp_props.is_comp_scene
+        return SwitchToMaskOperator.poll(context)
 
     # Draw panel
     def draw(self, context):
-        self.layout.operator(
-            BackToSequenceEditorOperator.bl_idname, icon='SEQ_SEQUENCER'
-        )
         self.layout.operator(SwitchToMaskOperator.bl_idname, icon='MOD_MASK')
         self.layout.prop(
-            context.scene.comp_props, 'mask_screen', text="", icon='SPLITSCREEN'
-        )
-
-### Mask Panel ###
-##################
-
-# Switch to mask editing
-class BackToCompositeScreenOperator(bpy.types.Operator):
-    # Meta data
-    bl_idname = "vse_composite.back_to_compositing"
-    bl_label = "Switch to compositing"
-    bl_description = "Swich to compositing Scene"
-
-    # Show only for composite strips
-    @classmethod
-    def poll(self, context):
-        return context.scene.comp_props.is_comp_scene
-
-    # Switch scene
-    def invoke(self, context, event):
-        # Store composite scene
-        composite_scene = context.scene
-
-        # Get composite scene
-        comp_props = context.scene.comp_props
-
-        # Switch to screen
-        switch_screen(context, comp_props.composite_screen)
-
-        # Switch to scene
-        context.screen.scene = composite_scene
-
-        return {'FINISHED'}
-
-# Switch to sequence editor Panel
-class MaskPanel(bpy.types.Panel):
-    # Meta data
-    bl_label = "Switch to composite screen"
-    bl_space_type = "CLIP_EDITOR"
-    bl_region_type = "UI"
-
-    # Show only for composite strips
-    @classmethod
-    def poll(self, context):
-        return context.scene.comp_props.is_comp_scene
-
-    # Draw panel
-    def draw(self, context):
-        self.layout.operator(
-            BackToCompositeScreenOperator.bl_idname, text="Composite",
-            icon='NODETREE'
+            context.scene.sf_comp_props, 'mask_screen', text="",
+            icon='SPLITSCREEN'
         )
 
 ### Module registration ###
@@ -1048,7 +1139,7 @@ def register():
     bpy.utils.register_module(__name__)
 
     # Register scene properties
-    bpy.types.Scene.comp_props = bpy.props.PointerProperty(
+    bpy.types.Scene.sf_comp_props = bpy.props.PointerProperty(
         type=SceneCompositeProps
     )
 
@@ -1056,6 +1147,7 @@ def register():
     bpy.types.SEQUENCER_MT_add_effect.append(composite_button)
     bpy.types.SEQUENCER_MT_add_effect.append(keying_button)
     bpy.types.SEQUENCER_MT_add_effect.append(pixelize_button)
+    bpy.types.SEQUENCER_MT_add_effect.append(transform_3d_button)
 
 # Unregister module
 def unregister():
@@ -1063,12 +1155,13 @@ def unregister():
     bpy.utils.unregister_module(__name__)
 
     # Unregister scene properties
-    del bpy.types.Scene.comp_props
+    del bpy.types.Scene.sf_comp_props
 
     # Remove buttons
     bpy.types.SEQUENCER_MT_add_effect.remove(composite_button)
     bpy.types.SEQUENCER_MT_add_effect.remove(keying_button)
     bpy.types.SEQUENCER_MT_add_effect.remove(pixelize_button)
+    bpy.types.SEQUENCER_MT_add_effect.remove(transform_3d_button)
 
 # Register if executed as script
 if __name__ == '__main__':
