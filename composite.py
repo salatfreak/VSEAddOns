@@ -21,7 +21,7 @@ bl_info = {
     "name": "Add Composite Effect",
     "author": "Salatfreak",
     "version": (0, 2),
-    "blender": (2, 75),
+    "blender": (2, 80, 0),
     "location": "Video Sequence Editor > Add > Effect Strip > Composite",
     "description": "Adds Composite effect to Image and Movie Strips",
     "warning": "",
@@ -79,7 +79,7 @@ img_seq_re = re.compile("^(.*[^\d])?(\d+)\.("+ img_ext_pattern +")$")
 # Composite scene property group
 class SceneCompositeProps(bpy.types.PropertyGroup):
     # Is composite scene property
-    is_comp_scene = bpy.props.BoolProperty(
+    is_comp_scene: bpy.props.BoolProperty(
         name="Is Composite Scene", default=False
     )
     
@@ -88,7 +88,7 @@ class SceneCompositeProps(bpy.types.PropertyGroup):
         return [(scr.name, scr.name, "") for scr in bpy.data.screens]
 
     # Mask screen property
-    mask_screen = bpy.props.EnumProperty(name="Mask screen", items=get_screens)
+    mask_screen: bpy.props.EnumProperty(name="Mask screen", items=get_screens)
 
 ### Effect operators ###
 ########################
@@ -1111,7 +1111,7 @@ class SwitchToMaskOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 # Switch to sequence editor Panel
-class CompositeScenePanel(bpy.types.Panel):
+class NODE_EDITOR_PT_composite_scene_panel(bpy.types.Panel):
     # Meta data
     bl_label = "Composite Scene"
     bl_space_type = "NODE_EDITOR"
@@ -1136,7 +1136,15 @@ class CompositeScenePanel(bpy.types.Panel):
 # Register module
 def register():
     # Register module
-    bpy.utils.register_module(__name__)
+
+    bpy.utils.register_class(SceneCompositeProps)
+    #bpy.utils.register_class(EffectAddOperator)
+    bpy.utils.register_class(CompositeEffectAddOperator)
+    bpy.utils.register_class(KeyingEffectAddOperator)
+    bpy.utils.register_class(PixelizeEffectAddOperator)
+    bpy.utils.register_class(Transform3DEffectAddOperator)
+    bpy.utils.register_class(SwitchToMaskOperator)
+    bpy.utils.register_class(NODE_EDITOR_PT_composite_scene_panel)
 
     # Register scene properties
     bpy.types.Scene.sf_comp_props = bpy.props.PointerProperty(
@@ -1152,7 +1160,14 @@ def register():
 # Unregister module
 def unregister():
     # Unregister module
-    bpy.utils.unregister_module(__name__)
+    bpy.utils.unregister_class(SceneCompositeProps)
+    #bpy.utils.unregister_class(EffectAddOperator)
+    bpy.utils.unregister_class(CompositeEffectAddOperator)
+    bpy.utils.unregister_class(KeyingEffectAddOperator)
+    bpy.utils.unregister_class(PixelizeEffectAddOperator)
+    bpy.utils.unregister_class(Transform3DEffectAddOperator)
+    bpy.utils.unregister_class(SwitchToMaskOperator)
+    bpy.utils.unregister_class(NODE_EDITOR_PT_composite_scene_panel)
 
     # Unregister scene properties
     del bpy.types.Scene.sf_comp_props
